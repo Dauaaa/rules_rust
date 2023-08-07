@@ -101,7 +101,14 @@ def _rust_analyzer_aspect_impl(target, ctx):
         if RustAnalyzerGroupInfo in ctx.rule.attr.actual:
             dep_infos.extend(ctx.rule.attr.actul[RustAnalyzerGroupInfo])
 
+    # if ctx.rule.kind == "rust_library_group":
+    #     fail([target.label, dep_infos[0].crate.name])
+
     if rust_common.crate_group_info in target:
+        # Since rust_prost_library's rule already returns a RustAnalyzerGroupInfo,
+        # returning it from this aspect will result in error.
+        if ctx.rule.kind == "rust_prost_library":
+            return []
         return [RustAnalyzerGroupInfo(deps = dep_infos)]
 
     if rust_common.crate_info in target:
@@ -125,7 +132,7 @@ def _rust_analyzer_aspect_impl(target, ctx):
 
     ctx.actions.write(
         output = crate_spec,
-        content = json.encode(_create_single_crate(ctx, rust_analyzer_info)),
+        content = json.encode(get_rust_analyzer_spec_content(ctx, rust_analyzer_info)),
     )
 
     return [
@@ -181,8 +188,8 @@ def _crate_id(crate_info):
     """
     return "ID-" + crate_info.root.path
 
-def _create_single_crate(ctx, info):
-    """Creates a crate in the rust-project.json format.
+def get_rust_analyzer_spec_content(ctx, info):
+    """Returns an object representing a crate in the rust-project.json format.
 
     Args:
         ctx (ctx): The rule context

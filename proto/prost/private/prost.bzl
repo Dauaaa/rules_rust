@@ -9,6 +9,62 @@ load("//rust/private:rustc.bzl", "rustc_compile_action")
 # buildifier: disable=bzl-visibility
 load("//rust/private:utils.bzl", "can_build_metadata")
 
+# buildifier: disable=bzl-visibility
+load("//rust/private:rust_analyzer.bzl", "RustAnalyzerInfo", "RustAnalyzerGroupInfo", "get_rust_analyzer_spec_content")
+
+# buildifier: disable=bzl-visibility
+load(
+    "//rust/private:utils.bzl",
+    "find_toolchain",
+)
+
+def _create_ra_file(ctx, crate_name, dep_variant_info, target, runtime_deps):
+    toolchain = find_toolchain(ctx)
+
+    cfgs = ["test", "debug_assertion"]
+
+    crate_info = dep_variant_info.crate_info
+
+    dep_infos = []
+    if hasattr(ctx.rule.attr, "deps"):
+        dep_infos += [dep[RustAnalyzerInfo] for dep in ctx.rule.attr.deps if RustAnalyzerInfo in dep]
+
+    """
+    for toolchain_dep in runtime_deps:
+        crate_spec = ctx.actions.declare_file(ctx.label.name + ".rust_analyzer_crate_spec")
+
+        dep_infos.append(RustAnalyzerInfo(
+                crate = dep.crate_info,
+                cfgs = cfgs,
+                env = getattr(ctx.rule.attr, "rustc_env", {}),
+                deps = dep_infos,
+                crate_specs = depset(direct = [crate_spec], transitive = [dep.crate_specs for dep in dep_infos]),
+                proc_macro_dylib_path = None,
+                build_info = None,
+            )
+        )
+    """
+
+    crate_spec = ctx.actions.declare_file(ctx.label.name + ".rust_analyzer_crate_spec")
+
+    rust_analyzer_info = RustAnalyzerInfo(
+        crate = crate_info,
+        cfgs = cfgs,
+        env = getattr(ctx.rule.attr, "rustc_env", {}),
+        deps = dep_infos,
+        crate_specs = depset(direct = [crate_spec], transitive = [dep.crate_specs for dep in dep_infos]),
+        proc_macro_dylib_path = None,
+        build_info = None,
+    )
+
+    ctx.actions.write(
+        output = crate_spec,
+        content = json.encode(get_rust_analyzer_spec_content(ctx, rust_analyzer_info)),
+    )
+
+    return rust_analyzer_info
+
+
 RUST_EDITION = "2021"
 
 TOOLCHAIN_TYPE = "@rules_rust//proto/prost:toolchain_type"
@@ -250,12 +306,24 @@ def _rust_prost_aspect_impl(target, ctx):
         edition = RUST_EDITION,
     )
 
+    ra_info = _create_ra_file(
+        ctx = ctx,
+        crate_name = crate_name,
+        dep_variant_info = dep_variant_info,
+        target = target,
+        runtime_deps = runtime_deps,
+    )
+
     return [
         ProstProtoInfo(
             dep_variant_info = dep_variant_info,
             transitive_dep_infos = depset(transitive = transitive_deps),
             package_info = package_info_file,
         ),
+        ra_info,
+        RustAnalyzerGroupInfo(
+            deps = [ra_info] + [dep[RustAnalyzerInfo] for dep in ctx.rule.attr.deps if RustAnalyzerInfo in dep]
+        )
     ]
 
 rust_prost_aspect = aspect(
@@ -324,6 +392,7 @@ rust_prost_aspect = aspect(
 def _rust_prost_library_impl(ctx):
     proto_dep = ctx.attr.proto
     rust_proto_info = proto_dep[ProstProtoInfo]
+    ra_group_info = proto_dep[RustAnalyzerGroupInfo]
     dep_variant_info = rust_proto_info.dep_variant_info
 
     return [
@@ -334,6 +403,7 @@ def _rust_prost_library_impl(ctx):
                 transitive = [rust_proto_info.transitive_dep_infos],
             ),
         ),
+        ra_group_info,
     ]
 
 rust_prost_library = rule(
@@ -351,6 +421,9 @@ rust_prost_library = rule(
             executable = True,
             cfg = "exec",
         ),
+        "deps": attr.label_list(
+
+        )
     },
 )
 
@@ -394,7 +467,7 @@ rust_prost_toolchain = rule(
         ),
         "prost_runtime": attr.label(
             doc = "The Prost runtime crates to use.",
-            providers = [[rust_common.crate_info], [rust_common.crate_group_info]],
+            providers = [[rust_common.crate_info], [rust_common.crate_group_info], [RustAnalyzerGroupInfo], [RustAnalyzerInfo]],
             mandatory = True,
         ),
         "prost_types": attr.label(
